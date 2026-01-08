@@ -1,0 +1,18 @@
+[project]
+name = "tcga-pancancer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "graphviz>=0.21",
+    "pyro-ppl[lightning]>=1.9.1",
+    "scanpy[skmisc]>=1.11.5",
+    "torch>=2.9.1",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.14.9"]
+
+[tool.ruff.lint]
+ignore = ["F403"]
