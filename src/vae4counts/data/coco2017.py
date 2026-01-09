@@ -29,8 +29,8 @@ def load_coco2017_object_counts(
     data_path: str | Path = "coco2017-object-counts", subset: str = "train"
 ):
     """Loads count data extracted from COCO 2017 images. If the data is not found,
-    it will be downloaded automatically. The training and validation set has over
-    120K and 5K samples respectively.
+    it will be downloaded automatically. There are total of 80 objects recorded.
+    The training and validation set has over 120K and 5K samples respectively.
 
     Args:
         data_path (str | Path): Directory to the dataset. Default: "coco2017-object-counts"

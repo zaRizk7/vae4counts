@@ -1,2 +1,2 @@
 from .mlp import *
-from .variational import *
+from .probabilistic import *
