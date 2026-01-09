@@ -24,12 +24,35 @@ __all__ = [
 
 
 class CategoricalLinear(nn.Linear):
+    """An extension of `nn.Linear` that outputs a categorical distribution
+    given an input.
+
+    Args:
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        bias (bool): If set to False, the layer will not learn an additive bias.
+            Default: True
+    """
+
     def forward(self, input):
         logits = super().forward(input)
         return OneHotCategorical(logits=logits)
 
 
 class GaussianLinear(nn.Linear):
+    """An extension of `nn.Linear` that outputs a Gaussian distribution
+    given an input.
+
+    Args:
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        bias (bool): If set to False, the layer will not learn an additive bias.
+            Default: True
+        constant_scale (bool): Assumes that the standard deviation is equal to one.
+            Default: False
+        log (bool): If True, uses log-Gaussian instead of Gaussian. Default: False
+    """
+
     def __init__(
         self,
         in_features,
@@ -69,6 +92,27 @@ class GaussianLinear(nn.Linear):
 
 
 class GaussianMixtureLinear(nn.Linear):
+    """An extension of `nn.Linear` that outputs a Gaussian mixture distribution
+    given an input and a one-hot encoded component index to condition on a component.
+    There are two ways to condition:
+        - "select": Outputs over num_components of distribution and selects with
+            the one-hot encoded index by dot product over the component dim.
+        - "additive": Adds an additional linear layer with the same out_features and
+            adds the embedding to the output before any link function is applied.
+
+    Args:
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        num_components (int): Number of components in the mixture.
+        condition (str): Conditioning approach to select a component. Either
+            "select" or "additive". Default: "select"
+        bias (bool): If set to False, the layer will not learn an additive bias.
+            Default: True
+        constant_scale (bool): Assumes that the standard deviation is equal to one.
+            Default: False
+        log (bool): If True, uses log-Gaussian instead of Gaussian. Default: False
+    """
+
     def __init__(
         self,
         in_features,
@@ -95,23 +139,27 @@ class GaussianMixtureLinear(nn.Linear):
 
         if condition == "additive":
             # works the same as nn.Embedding, just with one-hot encoding
-            self.latent_proj = nn.Linear(num_components, out_features)
+            self.component_proj = nn.Linear(num_components, out_features)
         else:
-            self.register_module("latent_proj", None)
+            self.register_module("component_proj", None)
 
     @property
     def container(self):
+        """Container for the component distribution"""
         return LogNormal if self.log else Normal
 
     @property
     def reshape_size(self):
+        """Expected reshape size for the original linear output to obtain output of
+        (-1, components, features). Only used when condition is set to "select".
+        """
         if self.condition == "additive":
             raise ValueError("Only available when condition='select'.")
         return (-1, self.num_components, self.out_features // self.num_components)
 
     def forward(
         self, input: torch.Tensor, component: torch.Tensor | None = None
-    ) -> Normal:
+    ) -> Normal | LogNormal:
         loc, scale = super().forward(input), 1.0
 
         if self.condition == "additive" and component is not None:
@@ -127,9 +175,13 @@ class GaussianMixtureLinear(nn.Linear):
         return self.container(loc, scale).to_event(1)
 
     def extra_repr(self):
-        out_features = self.out_features // self.num_components
+        out_features = self.out_features
+        if self.condition == "select":
+            out_features //= self.num_components
+
         if not self.constant_scale:
             out_features //= 2
+
         return (
             f"in_features={self.in_features}, out_features={out_features}, "
             f"num_components={self.num_components}, condition='{self.condition}', "
@@ -139,6 +191,16 @@ class GaussianMixtureLinear(nn.Linear):
 
 
 class PoissonLinear(nn.Linear):
+    """An extension of `nn.Linear` that outputs a Poisson distribution
+    given an input.
+
+    Args:
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        bias (bool): If set to False, the layer will not learn an additive bias.
+            Default: True
+    """
+
     def forward(self, input: torch.Tensor) -> Poisson:
         log_rate = super().forward(input)
         rate = nonzero_softplus(log_rate)
@@ -146,6 +208,16 @@ class PoissonLinear(nn.Linear):
 
 
 class ZIPoissonLinear(nn.Linear):
+    """An extension of `nn.Linear` that outputs a Zero-Inflated Poisson distribution
+    given an input.
+
+    Args:
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        bias (bool): If set to False, the layer will not learn an additive bias.
+            Default: True
+    """
+
     def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
         super().__init__(in_features, out_features * 2, bias, device, dtype)
 
@@ -178,7 +250,28 @@ def make_variational_linear(
     device=None,
     dtype=None,
     **kwargs,
-) -> nn.Linear:
+) -> (
+    CategoricalLinear
+    | GaussianLinear
+    | GaussianMixtureLinear
+    | PoissonLinear
+    | ZIPoissonLinear
+):
+    """Factory function to initialize feature scaler. Available ones are:
+        - "categorical": Models categorical distribution.
+        - "gaussian": Models Gaussian distribution.
+        - "gaussian_mixture": Models mixture of Gaussian distribution.
+        - "poisson": Models Poisson distribution.
+        - "zi_poisson": Models Zero-Inflated Poisson distribution.
+
+    Args:
+        distribution (str): Chosen modeling distribution.
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        bias (bool): If set to False, the layer will not learn an additive bias.
+            Default: True
+        **kwargs: Additional params for the specific probabilistic layer.
+    """
     if distribution != "gaussian" and "constant_scale" in kwargs:
         kwargs.pop("constant_scale")
 
@@ -193,7 +286,25 @@ def make_variational_linear(
         )
 
 
-class VariationalMLP(nn.Module):
+class ProbabilisticMLP(nn.Module):
+    """An extension of MLP that outputs a probability distribution. Available ones are:
+        - "categorical": Models categorical distribution.
+        - "gaussian": Models Gaussian distribution.
+        - "gaussian_mixture": Models mixture of Gaussian distribution.
+        - "poisson": Models Poisson distribution.
+        - "zi_poisson": Models Zero-Inflated Poisson distribution.
+
+    Args:
+        distribution (str): Chosen modeling distribution.
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        num_hiddens (list[int] | None): List of hidden features to form a MLP between
+            in_features and out_features. If None, then reduces to a linear probabilistic
+            layer. Default: None
+        mlp_kwargs (dict): Additional params to initialize MLP. Default: {}
+        proba_kwargs (dict): Additional params to initialize probabilistic layer. Default: {}
+    """
+
     def __init__(
         self,
         distribution: str,
@@ -201,7 +312,7 @@ class VariationalMLP(nn.Module):
         out_features: int,
         num_hiddens: list[int] | None = None,
         mlp_kwargs: dict = {},
-        variational_kwargs: dict = {},
+        proba_kwargs: dict = {},
     ):
         super().__init__()
         if num_hiddens is None:
@@ -212,7 +323,7 @@ class VariationalMLP(nn.Module):
             self.mlp = MLP([in_features] + num_hiddens, **mlp_kwargs)
 
         self.variational = make_variational_linear(
-            distribution, last_hidden, out_features, **variational_kwargs
+            distribution, last_hidden, out_features, **proba_kwargs
         )
 
     def forward(self, input, *args, **kwargs) -> Distribution:

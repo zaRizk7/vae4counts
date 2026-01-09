@@ -12,17 +12,28 @@ BASE_URL = "https://toil-xena-hub.s3.us-east-1.amazonaws.com/download"
 
 URL = {
     "rna_seq": (
-        f"https://toil-xena-hub.s3.us-east-1.amazonaws.com/download/tcga_gene_expected_count.gz",
+        "https://toil-xena-hub.s3.us-east-1.amazonaws.com/download/tcga_gene_expected_count.gz",
         "rna-seq.tsv.gz",
     ),
     "phenotype": (
-        f"https://tcga-pancan-atlas-hub.s3.us-east-1.amazonaws.com/download/TCGA_phenotype_denseDataOnlyDownload.tsv.gz",
+        "https://tcga-pancan-atlas-hub.s3.us-east-1.amazonaws.com/download/TCGA_phenotype_denseDataOnlyDownload.tsv.gz",
         "phenotype.tsv.gz",
     ),
 }
 
 
 def _load_preprocessed_tcga_rna_seq(data_path: Path, num_top_genes: int | None = None):
+    """Loads the preprocessed `.h5ad` TCGA Pan-Cancer RNA-seq data.
+
+    Args:
+        data_path (str | Path): Directory to the preprocessed dataset.
+        num_top_genes (str): Number of top genes ranked by largest variance. If None,
+            selects all of the genes. Default: None
+
+    Returns:
+        ad.AnnData: Annotated data matrix with the count data in adata.X and phenotypes
+            stored in `adata.obs`.
+    """
     adata = ad.read_h5ad(data_path)
     num_top_genes = num_top_genes if num_top_genes is not None else adata.n_vars
     sc.pp.highly_variable_genes(adata, n_top_genes=num_top_genes, flavor="seurat_v3")
@@ -31,6 +42,13 @@ def _load_preprocessed_tcga_rna_seq(data_path: Path, num_top_genes: int | None =
 
 
 def _download_tcga_raw_data(data_path: Path):
+    """Downloads TCGA Pan-Cancer raw data. The two downloaded data are
+    the raw log2(1+count) normalized data and phenotype data. Both are in
+    `tsv.gz` format. The downloaded data will be placed in `data_path / "raw"`.
+
+    Args:
+        data_path (str): Directory to download the raw data.
+    """
     raw_path = data_path / "raw"
     raw_path.mkdir(exist_ok=True)
 
@@ -42,6 +60,16 @@ def _download_tcga_raw_data(data_path: Path):
 
 
 def _preprocess_raw_tcga_pancancer(data_path: Path):
+    """Preprocess TCGA Pan-Cancer raw data. Steps includes:
+        1. Transpose from (gene x cell) -> (cell x gene).
+        2. Invert from `log2(1+count)` -> `exp2(count - 1)`.
+        3. Parses phenotype data and match cell ids between RNA-seq and phenotype.
+        4. Stores as a `.h5ad` file to `data_path / "preproc" / "rna-seq.h5ad"`
+
+    Args:
+        data_path (str): Directory to the dataset folder containing "raw" folder and
+            raw format datasets.
+    """
     rna_seq = pd.read_csv(
         data_path / "raw" / URL["rna_seq"][1],
         index_col="sample",
@@ -81,6 +109,20 @@ def _preprocess_raw_tcga_pancancer(data_path: Path):
 def load_tcga_pancancer_rna_seq(
     data_path: str = "tcga-pancancer", num_top_genes: int | None = None
 ):
+    """Loads the TCGA Pan-Cancer RNA-seq with its phenotypes. If the data is not found,
+    it will be downloaded automatically. There are a total of 10.5K cells (or samples) with
+    over 60K of recorded genes (or feature). Hence, it is recommended to take the highly
+    varying genes given the large dimension of the data.
+
+    Args:
+        data_path (str | Path): Directory to the dataset. Default: "coco2017-object-counts"
+        num_top_genes (str): Number of top genes ranked by largest variance. If None,
+            selects all of the genes. Default: None
+
+    Returns:
+        ad.AnnData: Annotated data matrix with the count data in adata.X and various metadata
+            for observations (in `adata.obs`) and features (in `adata.var`).
+    """
     data_path: Path = Path(data_path)
     if not data_path.exists():
         data_path.mkdir()

@@ -3,20 +3,19 @@ from contextlib import nullcontext
 import pyro
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from pyro.distributions import OneHotCategorical, LogNormal, MixtureSameFamily, Normal
+from pyro.distributions import LogNormal, MixtureSameFamily, Normal, OneHotCategorical
 from pyro.distributions.constraints import simplex, softplus_positive
 from pyro.nn import PyroModule, PyroParam
 from pyro.poutine import scale as _scale
 
-from ..activations import nonzero_softplus
 from ..utils import select_mixture_comp
 
 __all__ = ["GaussianMixture"]
 
 
 class GaussianMixture(PyroModule):
-    """A PyTorch-based Gaussian Mixture used for Pyro.
+    """A PyTorch-based Gaussian Mixture used for Pyro. The module can be used as a standalone
+    model or a submodule for the `GMVAE`.
 
     Args:
         num_features (int): Number of features for each mixtures.
@@ -25,8 +24,10 @@ class GaussianMixture(PyroModule):
         init_mixture (str): Initialization method for mixture probs, either "random" or "constant".
             Setting to "constant" initialize the assignment by 1 / num_components. Default: "random"
         init_loc_mul (float): Multiplier to scale the initial mean. Default: 1.0
+        freeze_mixing_weights (bool): Prevent parametrization of the mixture's mixing weights. Default: True
+        log (bool): Whether to use log-Gaussian instead of Gaussian. Default: False
         obs_name (str): Variable name for the observed variable. Default: "obs"
-        comp_name (str): Variable name for the latent variable. Default: "latent"
+        comp_name (str): Variable name for the component latent variable. Default: "comp"
         module_name (str): A name to register the module to Pyro. Normally used if this module
             only used for another module extensions. Default: "gmm"
     """
@@ -59,6 +60,7 @@ class GaussianMixture(PyroModule):
 
     @torch.no_grad()
     def reset_parameters(self):
+        """Resets the parameters available"""
         # Define param shape
         mixing_logits = torch.empty(self.num_components)
         loc = torch.empty(self.num_components, self.num_features)
@@ -84,41 +86,64 @@ class GaussianMixture(PyroModule):
 
     @property
     def infer_cfg(self):
+        """Mapping for the component inference"""
         return {"infer": {"enumerate": self.marginal}}
 
     @property
     def comp_container(self):
+        """Container for the component distribution."""
         return LogNormal if self.log else Normal
 
     @property
     def mixing_dist(self):
+        """Distribution for the mixing weights."""
         return OneHotCategorical(self.mixing_weights)
 
-    @property
-    def comp_dist(self):
-        return self.comp_container(self.loc, self.scale).to_event(1)
+    def comp_dist(self, comp: torch.Tensor | None = None):
+        """Fetch component distribution. If `comp` is specified, it will
+        select the specific component's distribution.
+
+        Args:
+            comp (torch.Tensor | None): A tensor with shape (..., component) representing
+                one-hot encoded component index. Default: None
+        """
+        # Manually select the mixture's components to track sampling graph
+        loc, scale = self.loc, self.scale
+        if comp is not None:
+            loc, scale = select_mixture_comp([loc, scale], comp)
+        return self.comp_container(loc, scale).to_event(1)
 
     @property
     def dist(self):
-        return MixtureSameFamily(self.mixing_dist, self.comp_dist)
+        """Complete distribution for the Gaussian mixture."""
+        return MixtureSameFamily(self.mixing_dist, self.comp_dist())
 
     def forward(
         self,
         obs: torch.Tensor | None = None,
-        kl_scale_mixing: float = 1.0,
-        kl_scale_comp: float = 1.0,
+        scale_mixing: float = 1.0,
+        scale_comp: float = 1.0,
     ):
+        """Sampling the mixture distribution model.
+
+        Args:
+            obs (torch.Tensor | None): The observed value. If not specified,
+                it is assumed that the model is used as another model's module. Default: None
+            scale_mixing (float): The scaling for the mixing log-likelihood. In SVI, it will be used
+                for the KL divergence between the mixture and another distribution. Default: 1.0
+            scale_comp (float): The scaling for the component log-likelihood. In SVI, it will be used
+                for the KL divergence between the component and another distribution. Default: 1.0
+        """
+        if obs is not None:
+            pyro.module(self.module_name, self)
+
         # Use plate if used as the main model
         with nullcontext() if obs is None else pyro.plate("N", len(obs)):
-            with _scale(scale=kl_scale_mixing):
+            with _scale(scale=scale_mixing):
                 comp = pyro.sample(self.comp_name, self.mixing_dist, **self.infer_cfg)
-            # Manually select the mixture's components to track sampling graph
-            loc, scale = select_mixture_comp([self.loc, self.scale], comp)
 
-            with _scale(scale=kl_scale_comp):
-                return pyro.sample(
-                    self.obs_name, self.comp_container(loc, scale).to_event(1), obs=obs
-                )
+            with _scale(scale=scale_comp):
+                return pyro.sample(self.obs_name, self.comp_dist(comp), obs=obs)
 
     def extra_repr(self):
         return (
