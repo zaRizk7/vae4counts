@@ -3,9 +3,11 @@ import torch.nn as nn
 from pyro.distributions import (
     Distribution,
     LogNormal,
+    NegativeBinomial,
     Normal,
     OneHotCategorical,
     Poisson,
+    ZeroInflatedNegativeBinomial,
     ZeroInflatedPoisson,
 )
 
@@ -18,9 +20,17 @@ __all__ = [
     "GaussianLinear",
     "PoissonLinear",
     "ZIPoissonLinear",
-    "make_variational_linear",
-    "VariationalMLP",
+    "make_probabilistic_linear",
+    "ProbabilisticMLP",
 ]
+
+
+def _rate_fn(log_rate: torch.Tensor, log_scale: torch.Tensor | None = None):
+    """Applies softplus if `log_scale` is not defined, else do scVI style scaling."""
+    if log_scale is None:
+        return nonzero_softplus(log_rate)
+    eps = torch.finfo(log_scale.dtype).eps
+    return (log_rate.log_softmax(-1) + log_scale + eps).exp()
 
 
 class CategoricalLinear(nn.Linear):
@@ -34,7 +44,7 @@ class CategoricalLinear(nn.Linear):
             Default: True
     """
 
-    def forward(self, input):
+    def forward(self, input: torch.Tensor) -> OneHotCategorical:
         logits = super().forward(input)
         return OneHotCategorical(logits=logits)
 
@@ -115,13 +125,13 @@ class GaussianMixtureLinear(nn.Linear):
 
     def __init__(
         self,
-        in_features,
-        out_features,
-        num_components,
-        condition="select",
-        bias=True,
-        constant_scale=False,
-        log=False,
+        in_features: int,
+        out_features: int,
+        num_components: int,
+        condition: str = "select",
+        bias: bool = True,
+        constant_scale: bool = False,
+        log: bool = False,
         device=None,
         dtype=None,
     ):
@@ -190,6 +200,67 @@ class GaussianMixtureLinear(nn.Linear):
         )
 
 
+class NegativeBinomialLinear(nn.Linear):
+    """An extension of `nn.Linear` that outputs a Negative Binomial distribution
+    given an input.
+
+    Args:
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        bias (bool): If set to False, the layer will not learn an additive bias.
+            Default: True
+        shared_gate (bool): If True, uses a parametrized dispersion gate instead
+            from output. Default: False
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool = True,
+        shared_gate: bool = False,
+        device=None,
+        dtype=None,
+    ):
+        num_outputs = 1 if shared_gate else 2
+        out_features *= num_outputs
+        super().__init__(in_features, out_features, bias, device, dtype)
+        if shared_gate:
+            self.logits = nn.Parameter(torch.empty(out_features // num_outputs))
+        else:
+            self.register_parameter("logits", None)
+        self.reset_parameters(True)
+
+    @torch.no_grad()
+    def reset_parameters(self, reset_after_inherit: bool = False):
+        # Workaround when inheriting nn.Linear
+        if not reset_after_inherit:
+            return
+        super().reset_parameters()
+        if self.logits is not None:
+            nn.init.normal_(self.logits, std=0.05)
+
+    def forward(
+        self, input: torch.Tensor, log_scale: torch.Tensor | None = None
+    ) -> NegativeBinomial:
+        log_rate = super().forward(input)
+        logits = self.logits
+        if logits is None:
+            log_rate, logits = log_rate.chunk(2, -1)
+        rate = _rate_fn(log_rate, log_scale)
+        return NegativeBinomial(rate, logits=logits).to_event(1)
+
+    def extra_repr(self):
+        shared_gate = self.logits is not None
+        out_features = self.out_features
+        if not shared_gate:
+            out_features //= 2
+        return (
+            f"in_features={self.in_features}, out_features={out_features}, "
+            f"bias={self.bias is not None}, shared_gate={shared_gate}"
+        )
+
+
 class PoissonLinear(nn.Linear):
     """An extension of `nn.Linear` that outputs a Poisson distribution
     given an input.
@@ -201,9 +272,11 @@ class PoissonLinear(nn.Linear):
             Default: True
     """
 
-    def forward(self, input: torch.Tensor) -> Poisson:
+    def forward(
+        self, input: torch.Tensor, log_scale: torch.Tensor | None = None
+    ) -> Poisson:
         log_rate = super().forward(input)
-        rate = nonzero_softplus(log_rate)
+        rate = _rate_fn(log_rate, log_scale)
         return Poisson(rate).to_event(1)
 
 
@@ -216,33 +289,151 @@ class ZIPoissonLinear(nn.Linear):
         out_features (int): Size of each output sample.
         bias (bool): If set to False, the layer will not learn an additive bias.
             Default: True
+        shared_gate (bool): If True, uses a parametrized zero inflation gate instead
+            from output. Default: False
     """
 
-    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
-        super().__init__(in_features, out_features * 2, bias, device, dtype)
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        bias=True,
+        shared_gate=False,
+        device=None,
+        dtype=None,
+    ):
+        num_outputs = 1 if shared_gate else 2
+        out_features *= num_outputs
+        super().__init__(in_features, out_features, bias, device, dtype)
+        if shared_gate:
+            self.gate_logits = nn.Parameter(torch.empty(out_features // num_outputs))
+        else:
+            self.register_parameter("gate_logits", None)
+        self.reset_parameters(True)
 
-    def forward(self, input: torch.Tensor) -> ZeroInflatedPoisson:
-        output = super().forward(input)
-        log_rate, logit = output.chunk(2, -1)
-        rate = nonzero_softplus(log_rate)
-        return ZeroInflatedPoisson(rate, gate_logits=logit).to_event(1)
+    @torch.no_grad()
+    def reset_parameters(self, reset_after_inherit: bool = False):
+        # Workaround when inheriting nn.Linear
+        if not reset_after_inherit:
+            return
+        super().reset_parameters()
+        if self.gate_logits is not None:
+            nn.init.normal_(self.gate_logits, std=0.05)
+
+    def forward(
+        self, input: torch.Tensor, log_scale: torch.Tensor | None = None
+    ) -> ZeroInflatedPoisson:
+        log_rate = super().forward(input)
+        gate_logits = self.gate_logits
+        if gate_logits is None:
+            log_rate, gate_logits = log_rate.chunk(2, -1)
+        rate = _rate_fn(log_rate, log_scale)
+        return ZeroInflatedPoisson(rate, gate_logits=gate_logits).to_event(1)
 
     def extra_repr(self):
-        src = f"out_features={self.out_features}"
-        tgt = f"out_features={self.out_features // 2}"
-        return super().extra_repr().replace(src, tgt)
+        shared_gate = self.gate_logits is not None
+        out_features = self.out_features
+        if not shared_gate:
+            out_features //= 2
+        return (
+            f"in_features={self.in_features}, out_features={out_features}, "
+            f"bias={self.bias is not None}, shared_gate={shared_gate}"
+        )
 
 
-VARIATIONAL_LINEAR_LAYERS = {
+class ZINegativeBinomialLinear(nn.Linear):
+    """An extension of `nn.Linear` that outputs a Negative Binomial distribution
+    given an input.
+
+    Args:
+        in_features (int): Size of each input sample.
+        out_features (int): Size of each output sample.
+        bias (bool): If set to False, the layer will not learn an additive bias.
+            Default: True
+        shared_nb_gate (bool): If True, uses a parametrized dispersion gate instead
+            from output. Default: False
+        shared_nb_gate (bool): If True, uses a parametrized zero-inflation gate instead
+            from output. Default: False
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool = True,
+        shared_nb_gate: bool = False,
+        shared_zi_gate: bool = False,
+        device=None,
+        dtype=None,
+    ):
+        num_outputs = 1
+        num_outputs += 1 if not shared_nb_gate else 0
+        num_outputs += 1 if not shared_zi_gate else 0
+        out_features *= num_outputs
+        super().__init__(in_features, out_features, bias, device, dtype)
+        self.num_outputs = num_outputs
+        if shared_nb_gate:
+            self.nb_gate_logits = nn.Parameter(torch.empty(out_features // num_outputs))
+        else:
+            self.register_parameter("nb_gate_logits", None)
+        if shared_zi_gate:
+            self.zi_gate_logits = nn.Parameter(torch.empty(out_features // num_outputs))
+        else:
+            self.register_parameter("zi_gate_logits", None)
+        self.reset_parameters(True)
+
+    @torch.no_grad()
+    def reset_parameters(self, reset_after_inherit: bool = False):
+        # Workaround when inheriting nn.Linear
+        if not reset_after_inherit:
+            return
+        super().reset_parameters()
+        if self.nb_gate_logits is not None:
+            nn.init.normal_(self.nb_gate_logits, std=0.05)
+        if self.zi_gate_logits is not None:
+            nn.init.normal_(self.zi_gate_logits, std=0.05)
+
+    def forward(
+        self, input: torch.Tensor, log_scale: torch.Tensor | None = None
+    ) -> ZeroInflatedNegativeBinomial:
+        log_rate = super().forward(input)
+        nb_logits, zi_logits = self.nb_gate_logits, self.zi_gate_logits
+
+        if nb_logits is None and zi_logits is None:
+            log_rate, nb_logits, zi_logits = log_rate.chunk(self.num_outputs, -1)
+        elif nb_logits is None and zi_logits is not None:
+            log_rate, nb_logits = log_rate.chunk(self.num_outputs, -1)
+        elif nb_logits is not None and zi_logits is None:
+            log_rate, zi_logits = log_rate.chunk(self.num_outputs, -1)
+        rate = _rate_fn(log_rate, log_scale)
+
+        return ZeroInflatedNegativeBinomial(
+            rate, logits=nb_logits, gate_logits=zi_logits
+        ).to_event(1)
+
+    def extra_repr(self):
+        shared_nb_gate = self.nb_gate_logits is not None
+        shared_zi_gate = self.zi_gate_logits is not None
+        out_features = self.out_features // self.num_outputs
+        return (
+            f"in_features={self.in_features}, out_features={out_features}, "
+            f"bias={self.bias is not None}, shared_nb_gate={shared_nb_gate} "
+            f"shared_zi_gate={shared_zi_gate}"
+        )
+
+
+PROBABILISTIC_LINEAR_LAYERS = {
     "categorical": CategoricalLinear,
     "gaussian": GaussianLinear,
     "gaussian_mixture": GaussianMixtureLinear,
+    "negative_binomial": NegativeBinomialLinear,
     "poisson": PoissonLinear,
     "zi_poisson": ZIPoissonLinear,
+    "zi_nb": ZINegativeBinomialLinear,
 }
 
 
-def make_variational_linear(
+def make_probabilistic_linear(
     distribution: str,
     in_features: int,
     out_features: int,
@@ -254,6 +445,7 @@ def make_variational_linear(
     CategoricalLinear
     | GaussianLinear
     | GaussianMixtureLinear
+    | NegativeBinomialLinear
     | PoissonLinear
     | ZIPoissonLinear
 ):
@@ -261,8 +453,9 @@ def make_variational_linear(
         - "categorical": Models categorical distribution.
         - "gaussian": Models Gaussian distribution.
         - "gaussian_mixture": Models mixture of Gaussian distribution.
+        - "negative_binomial": Models negative binomial distribution.
         - "poisson": Models Poisson distribution.
-        - "zi_poisson": Models Zero-Inflated Poisson distribution.
+        - "zi_poisson": Models zero-inflated Poisson distribution.
 
     Args:
         distribution (str): Chosen modeling distribution.
@@ -276,11 +469,11 @@ def make_variational_linear(
         kwargs.pop("constant_scale")
 
     try:
-        return VARIATIONAL_LINEAR_LAYERS[distribution](
+        return PROBABILISTIC_LINEAR_LAYERS[distribution](
             in_features, out_features, bias=bias, device=device, dtype=dtype, **kwargs
         )
     except KeyError:
-        sup_vals = make_string_of_values(list(VARIATIONAL_LINEAR_LAYERS))
+        sup_vals = make_string_of_values(list(PROBABILISTIC_LINEAR_LAYERS))
         raise KeyError(
             f"Unsupported distribution '{distribution}'! Currently only supports {sup_vals}."
         )
@@ -322,10 +515,10 @@ class ProbabilisticMLP(nn.Module):
             last_hidden = num_hiddens[-1]
             self.mlp = MLP([in_features] + num_hiddens, **mlp_kwargs)
 
-        self.variational = make_variational_linear(
+        self.probs_proj = make_probabilistic_linear(
             distribution, last_hidden, out_features, **proba_kwargs
         )
 
     def forward(self, input, *args, **kwargs) -> Distribution:
         hidden = self.mlp(input)
-        return self.variational(hidden, *args, **kwargs)
+        return self.probs_proj(hidden, *args, **kwargs)
