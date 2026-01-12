@@ -51,34 +51,40 @@ class CountPerScale(nn.Module):
     apply count per-million (cpm), commonly seen for RNA-seq data.
 
     Args:
-        scale (float): The multiplicative scale used after normalization. Default: 1e6
+        scale (float | None): The multiplicative scale used after normalization.
+            If None, scale by the median. Default: None
         eps (float): Small value to prevent zero division. Default: 1e-4
         dim (int): Feature dimension to normalize. Default: -1
     """
 
-    def __init__(self, scale: float = 1e6, eps: float = 1e-4, dim: int = -1):
+    def __init__(self, scale: float | None = None, eps: float = 1e-4, dim: int = -1):
         super().__init__()
         self.scale = scale
         self.eps = eps
         self.dim = dim
 
     def forward(self, input: torch.Tensor):
-        return F.normalize(input, p=1, dim=self.dim, eps=self.eps) * self.scale
+        scale = self.scale
+        if scale is None:
+            scale, _ = input.median(dim=self.dim, keepdim=True)
+        return F.normalize(input, p=1, dim=self.dim, eps=self.eps) * scale
 
     def extra_repr(self):
-        return f"scale={self.scale:,}, eps={self.eps:.5f}, dim={self.dim}"
+        scale = "'median'" if self.scale is None else f"{self.scale:,}"
+        return f"scale={scale}, eps={self.eps:.5f}, dim={self.dim}"
 
 
 class Log1PCPS(nn.Sequential):
     """A wrapper that applied `log1p(cps(x))` as a layer.
 
     Args:
-        scale (float): The multiplicative scale used after normalization. Default: 1e6
+        scale (float | None): The multiplicative scale used after normalization.
+            If None, scale by the median. Default: None
         eps (float): Small value to prevent zero division. Default: 1e-4
         dim (int): Feature dimension to normalize. Default: -1
     """
 
-    def __init__(self, scale=1e6, eps=1e-4, dim=-1):
+    def __init__(self, scale: float | None = None, eps: float = 1e-4, dim: int = -1):
         super().__init__()
         self.add_module("log1p", Log1P())
         self.add_module("cps", CountPerScale(scale, eps, dim))
