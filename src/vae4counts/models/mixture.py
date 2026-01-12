@@ -1,9 +1,17 @@
 from contextlib import nullcontext
+from functools import partial
 
 import pyro
 import torch
 import torch.nn as nn
-from pyro.distributions import LogNormal, MixtureSameFamily, Normal, OneHotCategorical
+import torch.nn.functional as F
+from pyro.distributions import (
+    Categorical,
+    LogNormal,
+    MixtureSameFamily,
+    Normal,
+    OneHotCategorical,
+)
 from pyro.distributions.constraints import simplex, softplus_positive
 from pyro.nn import PyroModule, PyroParam
 from pyro.poutine import scale as _scale
@@ -116,33 +124,38 @@ class GaussianMixture(PyroModule):
     @property
     def dist(self):
         """Complete distribution for the Gaussian mixture."""
-        return MixtureSameFamily(self.mixing_dist, self.comp_dist())
+        return MixtureSameFamily(Categorical(self.mixing_weights), self.comp_dist())
 
     def forward(
         self,
         obs: torch.Tensor | None = None,
-        scale_mixing: float = 1.0,
-        scale_comp: float = 1.0,
+        comp: torch.Tensor | None = None,
+        mixing_scale: float = 1.0,
+        comp_scale: float = 1.0,
     ):
         """Sampling the mixture distribution model.
 
         Args:
             obs (torch.Tensor | None): The observed value. If not specified,
                 it is assumed that the model is used as another model's module. Default: None
-            scale_mixing (float): The scaling for the mixing log-likelihood. In SVI, it will be used
+            comp (torch.Tensor | None): If it is not None, comp will be assumed to be observed.
+                Modifying the behavior to mimic Naive Bayes. Default: None
+            mixing_scale (float): The scaling for the mixing log-likelihood. In SVI, it will be used
                 for the KL divergence between the mixture and another distribution. Default: 1.0
-            scale_comp (float): The scaling for the component log-likelihood. In SVI, it will be used
+            comp_scale (float): The scaling for the component log-likelihood. In SVI, it will be used
                 for the KL divergence between the component and another distribution. Default: 1.0
         """
-        if obs is not None:
+        if obs is not None or comp is not None:
             pyro.module(self.module_name, self)
 
         # Use plate if used as the main model
         with nullcontext() if obs is None else pyro.plate("N", len(obs)):
-            with _scale(scale=scale_mixing):
-                comp = pyro.sample(self.comp_name, self.mixing_dist, **self.infer_cfg)
+            with _scale(scale=mixing_scale):
+                comp = pyro.sample(
+                    self.comp_name, self.mixing_dist, obs=comp, **self.infer_cfg
+                )
 
-            with _scale(scale=scale_comp):
+            with _scale(scale=comp_scale):
                 return pyro.sample(self.obs_name, self.comp_dist(comp), obs=obs)
 
     def extra_repr(self):
@@ -150,3 +163,55 @@ class GaussianMixture(PyroModule):
             f"num_features={self.num_features}, num_components={self.num_components}, "
             f"marginal='{self.marginal}', log={self.log}"
         )
+
+    @torch.no_grad()
+    @staticmethod
+    def fit_from_data(
+        obs: torch.Tensor,
+        comp: torch.Tensor | None = None,
+        freeze_params: bool = True,
+        **kwargs,
+    ) -> GaussianMixture:
+        # Let it be parametrized
+        kwargs["freeze_mixing_weights"] = False
+
+        # Basically naive bayes like way
+        mixing_weights = torch.ones(1)
+        if comp is not None:
+            mixing_weights = F.normalize(comp.bincount(), p=1, dim=-1)
+        else:
+            comp = torch.zeros(len(obs))
+
+        if kwargs.get("log", False):
+            obs = obs.log().clamp_min(torch.finfo(torch.float).eps)
+
+        if obs.dim() == 1:
+            obs = obs.unsqueeze(-1)
+
+        # Fit MLE
+        loc = torch.empty(len(mixing_weights), *obs.shape[1:])
+        scale = torch.empty_like(loc)
+        for i, c in enumerate(comp.unique()):
+            loc[i] = obs[c == comp].mean(0)
+            scale[i] = obs[c == comp].std(0)
+
+        # Scale is being softplus inverted to support pyro's
+        # parametrization
+        # scale + log1p(-exp(-scale))
+        params = {
+            "mixing_weights": mixing_weights,
+            "loc": loc,
+            "scale": scale + scale.neg().exp().neg().log1p(),
+        }
+        params = {f"{k}_unconstrained": v for k, v in params.items()}
+
+        # Initialize
+        gmm = GaussianMixture(obs.shape[-1], len(mixing_weights), **kwargs)
+        gmm.load_state_dict(params)
+
+        # Use case: Empirical Bayes prior
+        if freeze_params:
+            for param in gmm.parameters():
+                param.requires_grad_(False)
+
+        return gmm
