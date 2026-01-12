@@ -102,6 +102,7 @@ def _preprocess_raw_tcga_pancancer(data_path: Path):
 
     # Return as anndata
     adata = sc.AnnData(rna_seq, phenotypes)
+    sc.pp.filter_cells(adata, min_genes=100)
     adata.write_h5ad(data_path / "preproc" / "rna-seq.h5ad")
     return adata
 
