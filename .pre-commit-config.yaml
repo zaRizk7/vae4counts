@@ -2,16 +2,11 @@ ci:
   autoupdate_commit_msg: "ci: pre-commit autoupdate"
 
 repos:
-  - repo: https://github.com/datarootsio/databooks
-    rev: 1.3.10
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.8.2
     hooks:
-      - id: databooks-meta
-        args:
-          [
-            "--cell-meta-keep=tags",
-            "--cell-fields-keep=id",
-            "--nb-meta-keep=kernelspec",
-          ]
+      - id: nbstripout
+        args: ["--keep-output", "--keep-metadata-keys=tags"]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
