@@ -34,4 +34,4 @@ repos:
       - id: ruff-format
       - name: ruff preview rules
         id: ruff
-        args: ["--preview", "--select=PLR0917"]
+        args: ["--preview"]
