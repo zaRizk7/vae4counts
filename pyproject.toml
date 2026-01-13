@@ -3,7 +3,7 @@ name = "vae4counts"
 version = "0.1.0"
 description = "Variational Autoencoder (VAE) implementation for modeling count data."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = [
     "graphviz>=0.21",
     "pyro-ppl[lightning]>=1.9.1",
@@ -15,7 +15,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pre-commit>=4.5.1", "ruff>=0.14.9", "wordcloud>=1.9.5"]
 coco-example = ["wordcloud>=1.9.5"]
-
 
 [tool.ruff.lint]
 ignore = ["F403"]
