@@ -14,7 +14,9 @@ If I have more time, I would perhaps try to extend the models to integrate multi
 
 # Setup
 
-For prerequisite, I would recommend to install atleast Python 3.10+, since the repo has lots of static typing syntaxes that is supported from 3.10+. There are several options to setup this repo. If you prefer to install it as a package you may use `pip` and do:
+For prerequisite, I would recommend to install atleast Python 3.10+, since the repo has lots of static typing syntaxes that is supported from 3.10+. Note that I developed the code using Python 3.14.
+
+There are several options to setup this repo. If you prefer to install it as a package you may use `pip` and do:
 ```sh
 pip install "vae4counts@git+https://github.com/zaRizk7/vae4counts@main"
 ```
