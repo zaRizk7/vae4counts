@@ -15,7 +15,9 @@ __all__ = ["VAE", "GMVAE", "CountVAE", "CountGMVAE"]
 class CountModelMixin:
     """A mixin class specific for modeling count data. Mainly used with
     RNA-seq data that tend to have large library size (sum of counts in
-    a sample)
+    a sample). It builds a log-Gaussian prior from count data's library size
+    (total counts per sample). This type of prior was also used in scVI, but this
+    implementation is a more simplified version without batch effect adjustments.
     """
 
     def fit_freq_scale_prior(self, obs: torch.Tensor):
