@@ -1,5 +1,4 @@
 from contextlib import nullcontext
-from functools import partial
 
 import pyro
 import torch
@@ -23,7 +22,9 @@ __all__ = ["GaussianMixture"]
 
 class GaussianMixture(PyroModule):
     """A PyTorch-based Gaussian Mixture used for Pyro. The module can be used as a standalone
-    model or a submodule for the `GMVAE`.
+    model or a submodule for the `GMVAE`. Note that this is an MLE Gaussian Mixture, not the
+    variational version. Hence, this implementation does not implement a variational guide
+    function.
 
     Args:
         num_features (int): Number of features for each mixtures.
@@ -107,13 +108,16 @@ class GaussianMixture(PyroModule):
         """Distribution for the mixing weights."""
         return OneHotCategorical(self.mixing_weights)
 
-    def comp_dist(self, comp: torch.Tensor | None = None):
+    def comp_dist(self, comp: torch.Tensor | None = None) -> Normal | LogNormal:
         """Fetch component distribution. If `comp` is specified, it will
         select the specific component's distribution.
 
         Args:
             comp (torch.Tensor | None): A tensor with shape (..., component) representing
                 one-hot encoded component index. Default: None
+
+        Returns:
+            (Normal | LogNormal): Distribution of the selected component.
         """
         # Manually select the mixture's components to track sampling graph
         loc, scale = self.loc, self.scale
@@ -122,7 +126,7 @@ class GaussianMixture(PyroModule):
         return self.comp_container(loc, scale).to_event(1)
 
     @property
-    def dist(self):
+    def dist(self) -> MixtureSameFamily:
         """Complete distribution for the Gaussian mixture."""
         return MixtureSameFamily(Categorical(self.mixing_weights), self.comp_dist())
 
