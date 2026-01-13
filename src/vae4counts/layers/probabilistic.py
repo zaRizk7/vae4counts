@@ -11,7 +11,7 @@ from pyro.distributions import (
     ZeroInflatedPoisson,
 )
 
-from ..activations import nonzero_softplus
+from ..activations import clipped_sigmoid, nonzero_softplus
 from ..utils import make_string_of_values, select_mixture_comp
 from .mlp import MLP
 
@@ -248,7 +248,8 @@ class NegativeBinomialLinear(nn.Linear):
         if logits is None:
             log_rate, logits = log_rate.chunk(2, -1)
         rate = _rate_fn(log_rate, log_scale)
-        return NegativeBinomial(rate, logits=logits).to_event(1)
+        probs = clipped_sigmoid(logits)
+        return NegativeBinomial(rate, probs=probs).to_event(1)
 
     def extra_repr(self):
         shared_gate = self.logits is not None
@@ -328,7 +329,8 @@ class ZIPoissonLinear(nn.Linear):
         if gate_logits is None:
             log_rate, gate_logits = log_rate.chunk(2, -1)
         rate = _rate_fn(log_rate, log_scale)
-        return ZeroInflatedPoisson(rate, gate_logits=gate_logits).to_event(1)
+        gate = clipped_sigmoid(gate_logits)
+        return ZeroInflatedPoisson(rate, gate=gate).to_event(1)
 
     def extra_repr(self):
         shared_gate = self.gate_logits is not None
@@ -406,9 +408,11 @@ class ZINegativeBinomialLinear(nn.Linear):
         elif nb_logits is not None and zi_logits is None:
             log_rate, zi_logits = log_rate.chunk(self.num_outputs, -1)
         rate = _rate_fn(log_rate, log_scale)
+        nb_probs = clipped_sigmoid(nb_logits)
+        zi_probs = clipped_sigmoid(zi_logits)
 
         return ZeroInflatedNegativeBinomial(
-            rate, logits=nb_logits, gate_logits=zi_logits
+            rate, probs=nb_probs, gate=zi_probs
         ).to_event(1)
 
     def extra_repr(self):
@@ -448,6 +452,7 @@ def make_probabilistic_linear(
     | NegativeBinomialLinear
     | PoissonLinear
     | ZIPoissonLinear
+    | ZINegativeBinomialLinear
 ):
     """Factory function to initialize feature scaler. Available ones are:
         - "categorical": Models categorical distribution.
@@ -456,6 +461,7 @@ def make_probabilistic_linear(
         - "negative_binomial": Models negative binomial distribution.
         - "poisson": Models Poisson distribution.
         - "zi_poisson": Models zero-inflated Poisson distribution.
+        - "zi_nb": Models zero-inflated negative binomial distribution.
 
     Args:
         distribution (str): Chosen modeling distribution.
