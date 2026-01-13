@@ -175,7 +175,7 @@ class GaussianMixture(PyroModule):
         comp: torch.Tensor | None = None,
         freeze_params: bool = True,
         **kwargs,
-    ) -> GaussianMixture:
+    ) -> "GaussianMixture":
         # Let it be parametrized
         kwargs["freeze_mixing_weights"] = False
 
