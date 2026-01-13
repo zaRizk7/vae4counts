@@ -1,7 +1,7 @@
 [project]
 name = "vae4counts"
 version = "0.1.0"
-description = "Add your description here"
+description = "Variational Autoencoder (VAE) implementation for modeling count data."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -13,10 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pre-commit>=4.5.1",
-    "ruff>=0.14.9",
-]
+dev = ["pre-commit>=4.5.1", "ruff>=0.14.9", "wordcloud>=1.9.5"]
 coco-example = ["wordcloud>=1.9.5"]
 
 
