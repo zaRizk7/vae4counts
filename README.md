@@ -29,7 +29,7 @@ For development, if wanted to be extended or modified, install it as a developme
 ```sh
 git clone https://github.com/zaRizk7/vae4counts.git
 cd vae4counts
-uv pip install -e ".[dev]"
+pip install -e ".[dev]"
 ```
 
 # Data Access
