@@ -36,7 +36,7 @@ uv pip install -e ".[dev]"
 
 Both COCO 2017 object counts used for my MSc project and TCGA Pan-Cancer bulk RNA-seq can be downloaded and used directly through the functions implemented in `vae4counts.data` module. Be aware that TCGA Pan-Cancer data is quite large (~700MB+).
 
-For PBMC 68K scRNA-seq, you need to access the data from 10X Genomics (https://www.10xgenomics.com/datasets/fresh-68-k-pbm-cs-donor-a-1-standard-1-1-0) and download the Gene / cell matrix (filtered) data. The annotations seen in the visualization can be accessed at https://github.com/10XGenomics/single-cell-3prime-paper and download the `68k_pbmc_barcodes_annotation.tsv` file. Afterwards, you need to combine the matrix data and annotation together, which can be done through `scanpy` and `pandas`. Using `scanpy`, export the data into `.h5ad` and it should be usable for the notebook I produced. I'm not sure whether I can share the preprocessed `.h5ad` data without permissions, so I'm not going to share it for this repo.
+For PBMC 68K scRNA-seq, you need to access the data from 10X Genomics (https://www.10xgenomics.com/datasets/fresh-68-k-pbm-cs-donor-a-1-standard-1-1-0) and download the Gene / cell matrix (filtered) data. The annotations seen in the visualization can be accessed at https://github.com/10XGenomics/single-cell-3prime-paper and download the `68k_pbmc_barcodes_annotation.tsv` file. Afterwards, you need to combine the matrix data and annotation together, which can be done through `scanpy` and `pandas`. Using `scanpy`, export the data into `.h5ad` and it should be usable for the notebook I produced. I'm not sure whether I can share the preprocessed `.h5ad` data without permissions, so I'm not going to share it in this repo.
 
 # References
 
